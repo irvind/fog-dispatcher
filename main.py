@@ -1,9 +1,10 @@
 import os
+import time
+
 import requests
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List
 from enum import Enum
 
 
@@ -29,8 +30,8 @@ DEFAULT_COEFS = {'cpu_bound': {'cpu': 1.0,
                                'network': 0.0,
                                'gpu': 1.0}}
 TASK_COEFS = {}
-WORKER_URLS = ['http://worker1', 'http://worker2']
-WORKER_STATE = [None for _ in range(len(WORKER_URLS))]
+WORKER_URLS = ['http://192.168.31.49:8000', 'http://192.168.31.48:8000']
+WORKER_STATE: int | None = [None for _ in range(len(WORKER_URLS))]
 
 
 def init_coefs():
@@ -77,24 +78,23 @@ def argmax(it):
 
 
 def fetch_worker_state():
-    for idx, url in enumerate(worker_urls):
+    for idx, url in enumerate(WORKER_URLS):
         WORKER_STATE[idx] = {
             'cpu_perc': 80 + idx*10,
             'gpu_perc': 0,
             'available_RAM': 10000,
             'available_storage': 1000*1000*100
         }
-        # TODO: uncomment
-        #resp = requests.get(url + '/server/load')
-        #body_json = resp.json()
-        #worker_state[idx] = {'cpu_perc': body_json['available_FLOPS_percentage'],
-        #                     'available_RAM': body_json['available_RAM']}
+        resp = requests.get(url + '/server/load')
+        body_json = resp.json()
+        WORKER_STATE[idx] = {'cpu_perc': body_json['available_FLOPS_percentage'],
+                             'gpu_perc': 0,
+                            'available_RAM': body_json['available_RAM']}
 
 
 def pick_worker(task_type):
     coefs = get_task_coefs()[task_type]
     fetch_worker_state()
-
     k_storage = 1
     k_ram = 1
     scores = []
@@ -103,7 +103,7 @@ def pick_worker(task_type):
             coefs['cpu'] * (w_state['cpu_perc'] / 100) +\
             coefs['gpu'] * (w_state['gpu_perc'] / 100) +\
             coefs['network'] * 1
-        score = score * k_storate * k_ram
+        score = score * k_storage * k_ram
         scores.append(score)
 
     worker_idx = argmax(scores)
@@ -111,10 +111,10 @@ def pick_worker(task_type):
 
 
 def run_task_in_worker(worker_idx, task_type):
-    task_mapping = {'cpu_bound': 'cpu-bound',
-                    'gpu_bound': 'gpu-bound',
-                    'network_bound': 'network-bound'}
-    task_name = task_mappgin[task_type]
+    task_mapping = {'cpu_bound': 'kr1t1ka/cpu-bound',
+                    'gpu_bound': 'kr1t1ka/gpu-bound',
+                    'network_bound': 'kr1t1ka/network-bound'}
+    task_name = task_mapping[task_type]
     url = f'{WORKER_URLS[worker_idx]}/docker/run?image={task_name}&waited=true'
     
     kwargs = {}
@@ -128,14 +128,20 @@ def run_task_in_worker(worker_idx, task_type):
 
 @app.post('/api/v1/run')
 def make_new_task(task: Task):
+    time_run_start = time.time()
     worker_idx = pick_worker(task.typeof.value)
-    return run_task_in_worker(worker_idx)
+    time_run_task_start = time.time()
+    res = run_task_in_worker(worker_idx,'cpu_bound')
+    print(f"Time with pick_worker: {time.time() - time_run_start}")
+    print(f"Time with out pick_worker: {time.time() - time_run_task_start}")
+    print(f"Time real: {res['logs']['execution_time']}")
+    return res
 
 
 @app.post("/api/v1/stop_all")
 def stop_all_workers():
-    for idx, url in enumerate(worker_urls):
-        url = f'{worker_urls[worker_idx]}/docker/containers/all'
+    for worker_idx, url in enumerate(WORKER_URLS):
+        url = f'{WORKER_URLS[worker_idx]}/docker/containers/all'
         resp = requests.delete(url)
         assert resp.status_code == 204
 
